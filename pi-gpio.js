@@ -4,7 +4,8 @@ var fs = require("fs"),
 	exec = require("child_process").exec;
 
 var gpioAdmin = "gpio-admin",
-	sysFsPath = "/sys/devices/virtual/gpio";
+	sysFsPath = "/sys/devices/virtual/gpio",
+    unexportPath = "/sys/class/gpio/unexport";
 
 var rev = fs.readFileSync("/proc/cpuinfo").toString().split("\n").filter(function(line) {
 	return line.indexOf("Revision") == 0;
@@ -116,7 +117,7 @@ function sanitizeOptions(options) {
 
 var gpio = {
 	rev: rev,
-	
+    
 	open: function(pinNumber, options, callback) {
 		pinNumber = sanitizePinNumber(pinNumber);
 
@@ -133,6 +134,20 @@ var gpio = {
 			gpio.setDirection(pinNumber, options.direction, callback);
 		}));
 	},
+    
+    // first try a close before opening so that the gpio-admin library won't generate
+    // an error upon open because it might already be open to us from a prior improper shutdown
+    // This should only be used when you know there is no contention among different processes for the GPIO ports
+    // NOTE: this uses a synchronous close so it might not return quickly
+    openGrab: function(pinNumber, options, callback) {
+        // purposely ignoring errors from the close
+        gpio.closeSync(pinNumber);
+        // the GPIO port doesn't seem to handle a close, immediately followed by an open
+        // so we insert a small delay
+        setTimeout(function() {
+            gpio.open(pinNumber, options, callback);
+        }, 250);
+    },
 
 	setDirection: function(pinNumber, direction, callback) {
 		pinNumber = sanitizePinNumber(pinNumber);
@@ -156,6 +171,18 @@ var gpio = {
 
 		exec(gpioAdmin + " unexport " + pinMapping[pinNumber], handleExecResponse("close", pinNumber, callback || noop));
 	},
+    
+    // synchronous close so it can be reliably used at shutdown
+    // returns zero or error
+    closeSync: function(pinNumber) {
+		pinNumber = sanitizePinNumber(pinNumber);
+        try {
+            fs.writeFileSync(unexportPath, pinMapping[pinNumber] + "", "utf8");
+            return 0;
+        } catch(e) {
+            return e;
+        }
+    },
 
 	read: function(pinNumber, callback) {
 		pinNumber = sanitizePinNumber(pinNumber);
@@ -173,7 +200,22 @@ var gpio = {
 		value = !!value?"1":"0";
 
 		fs.writeFile(sysFsPath + "/gpio" + pinMapping[pinNumber] + "/value", value, "utf8", callback);
-	}
+	},
+    
+    // synchronous version so it can be reliably used at shutdown
+    // to turn off GPIO output ports
+    writeSync: function(pinNumber, value) {
+		pinNumber = sanitizePinNumber(pinNumber);
+
+		value = !!value?"1":"0";
+
+        try {
+            fs.writeFileSync(sysFsPath + "/gpio" + pinMapping[pinNumber] + "/value", value, "utf8");
+            return 0;
+        } catch(e) {
+            return e;
+        }
+    }
 };
 
 gpio.export = gpio.open;
